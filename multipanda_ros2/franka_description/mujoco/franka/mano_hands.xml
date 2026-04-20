@@ -1,0 +1,341 @@
+<mujoco>
+  <!-- Articulated MANO hand models for teleoperation visualization.
+       Source: https://mano.is.tue.mpg.de/ via github.com/YuyangLee/mano-urdf
+       Each hand: 6 mocap drag points (wrist + 5 fingertips) +
+                  articulated hand body (palm + 5 finger chains).
+       Equality constraints make the hand track the drag points. -->
+
+  <compiler angle="radian" />
+
+  <default>
+    <default class="mano_hand">
+      <geom contype="0" conaffinity="0" rgba="0.82 0.71 0.62 0.85" group="2"/>
+      <joint damping="0.02" armature="0.001"/>
+      <default class="mano_mocap_geom">
+        <geom contype="0" conaffinity="0" group="2"/>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="mano_R_palm" file="mano_palm.stl"/>
+    <mesh name="mano_R_index1x" file="mano_index1x.stl"/>
+    <mesh name="mano_R_index2" file="mano_index2.stl"/>
+    <mesh name="mano_R_index3" file="mano_index3.stl"/>
+    <mesh name="mano_R_middle1x" file="mano_middle1x.stl"/>
+    <mesh name="mano_R_middle2" file="mano_middle2.stl"/>
+    <mesh name="mano_R_middle3" file="mano_middle3.stl"/>
+    <mesh name="mano_R_ring1x" file="mano_ring1x.stl"/>
+    <mesh name="mano_R_ring2" file="mano_ring2.stl"/>
+    <mesh name="mano_R_ring3" file="mano_ring3.stl"/>
+    <mesh name="mano_R_pinky1x" file="mano_pinky1x.stl"/>
+    <mesh name="mano_R_pinky2" file="mano_pinky2.stl"/>
+    <mesh name="mano_R_pinky3" file="mano_pinky3.stl"/>
+    <mesh name="mano_R_thumb1z" file="mano_thumb1z.stl"/>
+    <mesh name="mano_R_thumb2" file="mano_thumb2.stl"/>
+    <mesh name="mano_R_thumb3" file="mano_thumb3.stl"/>
+    <mesh name="mano_L_palm" file="mano_palm.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_index1x" file="mano_index1x.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_index2" file="mano_index2.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_index3" file="mano_index3.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_middle1x" file="mano_middle1x.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_middle2" file="mano_middle2.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_middle3" file="mano_middle3.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_ring1x" file="mano_ring1x.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_ring2" file="mano_ring2.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_ring3" file="mano_ring3.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_pinky1x" file="mano_pinky1x.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_pinky2" file="mano_pinky2.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_pinky3" file="mano_pinky3.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_thumb1z" file="mano_thumb1z.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_thumb2" file="mano_thumb2.stl" scale="1 -1 1"/>
+    <mesh name="mano_L_thumb3" file="mano_thumb3.stl" scale="1 -1 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- ==================== RIGHT HAND Mocap Targets ==================== -->
+    <!-- Palms-down orientation: palm faces -Z, fingers toward +X -->
+    <body name="mano_right_wrist" mocap="true" pos="-0.30 -0.50 0.82" quat="0.5 0.5 -0.5 -0.5">
+      <geom class="mano_mocap_geom" type="sphere" size="0.012" rgba="0.2 0.8 0.2 0.5"/>
+      <site name="mano_right_wrist_site" size="0.001"/>
+    </body>
+    <body name="mano_right_thumb_tip" mocap="true" pos="-0.25 -0.53 0.77">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.2 0.2 0.5"/>
+    </body>
+    <body name="mano_right_index_tip" mocap="true" pos="-0.19 -0.48 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.2 0.4 0.9 0.5"/>
+    </body>
+    <body name="mano_right_middle_tip" mocap="true" pos="-0.19 -0.50 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.8 0.1 0.5"/>
+    </body>
+    <body name="mano_right_ring_tip" mocap="true" pos="-0.19 -0.52 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.5 0.1 0.5"/>
+    </body>
+    <body name="mano_right_little_tip" mocap="true" pos="-0.19 -0.55 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.006" rgba="0.5 0.5 0.5 0.4"/>
+    </body>
+
+    <!-- RIGHT HAND Articulated Body -->
+    <body name="mano_R_hand" pos="-0.30 -0.50 0.82" quat="0.5 0.5 -0.5 -0.5" childclass="mano_hand">
+      <freejoint name="mano_R_free"/>
+      <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+      <geom name="mano_R_palm" type="mesh" mesh="mano_R_palm"/>
+      <!-- Index -->
+      <body name="mano_R_index1y" pos="-0.0880972 -0.00520036 0.020686" quat="0.0207461 -0.704984 -0.0206397 -0.708619">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_R_j_index1y" axis="0 1 0" range="-0.349066 0.349066"/>
+        <body name="mano_R_index1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_R_j_index1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_R_index1x" quat="0.0207461 0.704984 0.0206397 0.708619"/>
+          <body name="mano_R_index2" pos="0.00238357 -0.00591432 -0.0323765">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_R_j_index2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_R_index2" quat="0.0207461 0.704984 0.0206397 0.708619"/>
+            <body name="mano_R_index3" pos="0 0 -0.0221942">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_R_j_index3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_R_index3" quat="0.0207461 0.704984 0.0206397 0.708619"/>
+              <body name="mano_R_index_tip" pos="0 0 -0.016"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Middle -->
+      <body name="mano_R_middle1y" pos="-0.0946604 -0.00147896 -0.00335754" quat="0.0280283 -0.644307 -0.0115664 -0.764166">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_R_j_middle1y" axis="0 1 0" range="-0.523599 0.349066"/>
+        <body name="mano_R_middle1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_R_j_middle1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_R_middle1x" quat="0.0280283 0.644307 0.0115664 0.764166"/>
+          <body name="mano_R_middle2" pos="-0.000320716 -0.00355526 -0.0315338">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_R_j_middle2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_R_middle2" quat="0.0280283 0.644307 0.0115664 0.764166"/>
+            <body name="mano_R_middle3" pos="0 0 -0.0232755">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_R_j_middle3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_R_middle3" quat="0.0280283 0.644307 0.0115664 0.764166"/>
+              <body name="mano_R_middle_tip" pos="0 0 -0.017"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Ring -->
+      <body name="mano_R_ring1y" pos="-0.0817356 -0.00395742 -0.0266732" quat="0.0233679 0.585251 0.0590453 0.808362">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_R_j_ring1y" axis="0 1 0" range="-0.523599 0.349066"/>
+        <body name="mano_R_ring1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_R_j_ring1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_R_ring1x" quat="-0.0233679 0.585251 0.0590453 0.808362"/>
+          <body name="mano_R_ring2" pos="0.00429787 -0.00356368 -0.0282983">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_R_j_ring2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_R_ring2" quat="-0.0233679 0.585251 0.0590453 0.808362"/>
+            <body name="mano_R_ring3" pos="0 0 -0.0247859">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_R_j_ring3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_R_ring3" quat="-0.0233679 0.585251 0.0590453 0.808362"/>
+              <body name="mano_R_ring_tip" pos="0 0 -0.017"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Pinky -->
+      <body name="mano_R_pinky1y" pos="-0.068787 -0.00994033 -0.0432093" quat="0.114604 0.469585 0.0826793 0.871505">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_R_j_pinky1y" axis="0 1 0" range="-0.698132 0.349066"/>
+        <body name="mano_R_pinky1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_R_j_pinky1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_R_pinky1x" quat="0.114604 -0.469585 -0.0826793 -0.871505"/>
+          <body name="mano_R_pinky2" pos="-0.000912324 -0.00112828 -0.021062">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_R_j_pinky2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_R_pinky2" quat="0.114604 -0.469585 -0.0826793 -0.871505"/>
+            <body name="mano_R_pinky3" pos="0 0 -0.0189469">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_R_j_pinky3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_R_pinky3" quat="0.114604 -0.469585 -0.0826793 -0.871505"/>
+              <body name="mano_R_pinky_tip" pos="0 0 -0.015"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Thumb -->
+      <body name="mano_R_thumb1y" pos="-0.0240897 -0.0155223 0.0258128" quat="0.457776 -0.494578 -0.459441 -0.578574">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_R_j_thumb1y" axis="0 1 0" range="-0.174533 2.61799"/>
+        <body name="mano_R_thumb1z">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_R_j_thumb1z" axis="0 0 1" range="-0.698132 0.698132"/>
+          <geom type="mesh" mesh="mano_R_thumb1z" quat="0.457776 0.494578 0.459441 0.578574"/>
+          <body name="mano_R_thumb2" pos="0.0252649 -0.0175957 0" quat="0.574412 -0.601175 0.038173 0.554241">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_R_j_thumb2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_R_thumb2" quat="0.303832 0.79185 -0.375505 0.373706"/>
+            <body name="mano_R_thumb3" pos="0 0 -0.0270942">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_R_j_thumb3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_R_thumb3" quat="0.303832 0.79185 -0.375505 0.373706"/>
+              <body name="mano_R_thumb_tip" pos="0 0 -0.020"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- ==================== LEFT HAND Mocap Targets ==================== -->
+    <!-- Palms-down orientation, Y-mirrored finger layout for left hand -->
+    <body name="mano_left_wrist" mocap="true" pos="-0.30 0.52 0.82" quat="0.5 0.5 -0.5 -0.5">
+      <geom class="mano_mocap_geom" type="sphere" size="0.012" rgba="0.2 0.8 0.2 0.5"/>
+      <site name="mano_left_wrist_site" size="0.001"/>
+    </body>
+    <body name="mano_left_thumb_tip" mocap="true" pos="-0.25 0.55 0.77">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.2 0.2 0.5"/>
+    </body>
+    <body name="mano_left_index_tip" mocap="true" pos="-0.19 0.50 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.2 0.4 0.9 0.5"/>
+    </body>
+    <body name="mano_left_middle_tip" mocap="true" pos="-0.19 0.52 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.8 0.1 0.5"/>
+    </body>
+    <body name="mano_left_ring_tip" mocap="true" pos="-0.19 0.54 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.5 0.1 0.5"/>
+    </body>
+    <body name="mano_left_little_tip" mocap="true" pos="-0.19 0.57 0.81">
+      <geom class="mano_mocap_geom" type="sphere" size="0.006" rgba="0.5 0.5 0.5 0.4"/>
+    </body>
+
+    <!-- LEFT HAND Articulated Body (Y-mirrored from right hand) -->
+    <body name="mano_L_hand" pos="-0.30 0.52 0.82" quat="0.5 0.5 -0.5 -0.5" childclass="mano_hand">
+      <freejoint name="mano_L_free"/>
+      <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+      <geom name="mano_L_palm" type="mesh" mesh="mano_L_palm"/>
+      <!-- Index (Y-mirrored) -->
+      <body name="mano_L_index1y" pos="-0.0880972 0.00520036 0.020686" quat="0.0207461 0.704984 -0.0206397 0.708619">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_L_j_index1y" axis="0 1 0" range="-0.349066 0.349066"/>
+        <body name="mano_L_index1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_L_j_index1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_L_index1x" quat="0.0207461 -0.704984 0.0206397 -0.708619"/>
+          <body name="mano_L_index2" pos="0.00238357 0.00591432 -0.0323765">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_L_j_index2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_L_index2" quat="0.0207461 -0.704984 0.0206397 -0.708619"/>
+            <body name="mano_L_index3" pos="0 0 -0.0221942">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_L_j_index3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_L_index3" quat="0.0207461 -0.704984 0.0206397 -0.708619"/>
+              <body name="mano_L_index_tip" pos="0 0 -0.016"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Middle (Y-mirrored) -->
+      <body name="mano_L_middle1y" pos="-0.0946604 0.00147896 -0.00335754" quat="0.0280283 0.644307 -0.0115664 0.764166">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_L_j_middle1y" axis="0 1 0" range="-0.523599 0.349066"/>
+        <body name="mano_L_middle1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_L_j_middle1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_L_middle1x" quat="0.0280283 -0.644307 0.0115664 -0.764166"/>
+          <body name="mano_L_middle2" pos="-0.000320716 0.00355526 -0.0315338">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_L_j_middle2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_L_middle2" quat="0.0280283 -0.644307 0.0115664 -0.764166"/>
+            <body name="mano_L_middle3" pos="0 0 -0.0232755">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_L_j_middle3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_L_middle3" quat="0.0280283 -0.644307 0.0115664 -0.764166"/>
+              <body name="mano_L_middle_tip" pos="0 0 -0.017"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Ring (Y-mirrored) -->
+      <body name="mano_L_ring1y" pos="-0.0817356 0.00395742 -0.0266732" quat="0.0233679 -0.585251 0.0590453 -0.808362">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_L_j_ring1y" axis="0 1 0" range="-0.523599 0.349066"/>
+        <body name="mano_L_ring1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_L_j_ring1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_L_ring1x" quat="-0.0233679 -0.585251 0.0590453 -0.808362"/>
+          <body name="mano_L_ring2" pos="0.00429787 0.00356368 -0.0282983">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_L_j_ring2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_L_ring2" quat="-0.0233679 -0.585251 0.0590453 -0.808362"/>
+            <body name="mano_L_ring3" pos="0 0 -0.0247859">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_L_j_ring3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_L_ring3" quat="-0.0233679 -0.585251 0.0590453 -0.808362"/>
+              <body name="mano_L_ring_tip" pos="0 0 -0.017"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Pinky (Y-mirrored) -->
+      <body name="mano_L_pinky1y" pos="-0.068787 0.00994033 -0.0432093" quat="0.114604 -0.469585 0.0826793 -0.871505">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_L_j_pinky1y" axis="0 1 0" range="-0.698132 0.349066"/>
+        <body name="mano_L_pinky1x">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_L_j_pinky1x" axis="1 0 0" range="-0.174533 1.5708"/>
+          <geom type="mesh" mesh="mano_L_pinky1x" quat="0.114604 0.469585 -0.0826793 0.871505"/>
+          <body name="mano_L_pinky2" pos="-0.000912324 0.00112828 -0.021062">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_L_j_pinky2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_L_pinky2" quat="0.114604 0.469585 -0.0826793 0.871505"/>
+            <body name="mano_L_pinky3" pos="0 0 -0.0189469">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_L_j_pinky3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_L_pinky3" quat="0.114604 0.469585 -0.0826793 0.871505"/>
+              <body name="mano_L_pinky_tip" pos="0 0 -0.015"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <!-- Thumb (Y-mirrored) -->
+      <body name="mano_L_thumb1y" pos="-0.0240897 0.0155223 0.0258128" quat="0.457776 0.494578 -0.459441 0.578574">
+        <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+        <joint name="mano_L_j_thumb1y" axis="0 1 0" range="-0.174533 2.61799"/>
+        <body name="mano_L_thumb1z">
+          <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+          <joint name="mano_L_j_thumb1z" axis="0 0 1" range="-0.698132 0.698132"/>
+          <geom type="mesh" mesh="mano_L_thumb1z" quat="0.457776 -0.494578 0.459441 -0.578574"/>
+          <body name="mano_L_thumb2" pos="0.0252649 0.0175957 0" quat="0.574412 0.601175 0.038173 -0.554241">
+            <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+            <joint name="mano_L_j_thumb2" axis="1 0 0" range="0 1.74533"/>
+            <geom type="mesh" mesh="mano_L_thumb2" quat="0.303832 -0.79185 -0.375505 -0.373706"/>
+            <body name="mano_L_thumb3" pos="0 0 -0.0270942">
+              <inertial pos="0 0 0" mass="0.005" diaginertia="0.000001 0.000001 0.000001"/>
+              <joint name="mano_L_j_thumb3" axis="1 0 0" range="0 1.74533"/>
+              <geom type="mesh" mesh="mano_L_thumb3" quat="0.303832 -0.79185 -0.375505 -0.373706"/>
+              <body name="mano_L_thumb_tip" pos="0 0 -0.020"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <equality>
+    <!-- Right hand: weld palm to wrist mocap, connect fingertips -->
+    <weld body1="mano_R_hand" body2="mano_right_wrist" solref="0.002 1"/>
+    <connect body1="mano_R_index_tip" body2="mano_right_index_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_R_middle_tip" body2="mano_right_middle_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_R_ring_tip" body2="mano_right_ring_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_R_pinky_tip" body2="mano_right_little_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_R_thumb_tip" body2="mano_right_thumb_tip" anchor="0 0 0" solref="0.004 1"/>
+    <!-- Left hand: weld palm to wrist mocap, connect fingertips -->
+    <weld body1="mano_L_hand" body2="mano_left_wrist" solref="0.002 1"/>
+    <connect body1="mano_L_index_tip" body2="mano_left_index_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_L_middle_tip" body2="mano_left_middle_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_L_ring_tip" body2="mano_left_ring_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_L_pinky_tip" body2="mano_left_little_tip" anchor="0 0 0" solref="0.004 1"/>
+    <connect body1="mano_L_thumb_tip" body2="mano_left_thumb_tip" anchor="0 0 0" solref="0.004 1"/>
+  </equality>
+</mujoco>
