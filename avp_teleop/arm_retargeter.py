@@ -8,37 +8,6 @@ import mujoco
 from scipy.spatial.transform import Rotation
 
 
-def _mat_to_quat(mat):
-    """Convert 3x3 rotation matrix to quaternion [w, x, y, z] (MuJoCo convention)."""
-    r = Rotation.from_matrix(mat)
-    q = r.as_quat()  # scipy returns [x, y, z, w]
-    return np.array([q[3], q[0], q[1], q[2]])
-
-
-def _quat_to_mat(quat):
-    """Convert quaternion [w, x, y, z] to 3x3 rotation matrix."""
-    q = np.array([quat[1], quat[2], quat[3], quat[0]])  # scipy wants [x, y, z, w]
-    return Rotation.from_quat(q).as_matrix()
-
-
-def _quat_multiply(q1, q2):
-    """Multiply two quaternions [w, x, y, z]."""
-    r1 = Rotation.from_quat([q1[1], q1[2], q1[3], q1[0]])
-    r2 = Rotation.from_quat([q2[1], q2[2], q2[3], q2[0]])
-    r = r1 * r2
-    q = r.as_quat()
-    return np.array([q[3], q[0], q[1], q[2]])
-
-
-def _quat_diff(q1, q2):
-    """Compute rotation from q1 to q2: q_diff such that q2 = q1 * q_diff."""
-    r1 = Rotation.from_quat([q1[1], q1[2], q1[3], q1[0]])
-    r2 = Rotation.from_quat([q2[1], q2[2], q2[3], q2[0]])
-    r_diff = r1.inv() * r2
-    q = r_diff.as_quat()
-    return np.array([q[3], q[0], q[1], q[2]])
-
-
 def _orientation_error(target_mat, current_mat):
     """Compute 3D orientation error vector between two rotation matrices."""
     r_err = Rotation.from_matrix(target_mat @ current_mat.T)

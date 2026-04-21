@@ -54,29 +54,29 @@
 
   <worldbody>
     <!-- ==================== RIGHT HAND Mocap Targets ==================== -->
-    <!-- Palms-down orientation: palm faces -Z, fingers toward +X -->
-    <body name="mano_right_wrist" mocap="true" pos="-0.30 -0.50 0.82" quat="0.5 0.5 -0.5 -0.5">
+    <!-- Palm-down orientation: palm(-Y local) faces floor, fingers(-X local) point +X -->
+    <body name="mano_right_wrist" mocap="true" pos="-0.30 -0.50 0.82" quat="0 0 0.7071 0.7071">
       <geom class="mano_mocap_geom" type="sphere" size="0.012" rgba="0.2 0.8 0.2 0.5"/>
       <site name="mano_right_wrist_site" size="0.001"/>
     </body>
-    <body name="mano_right_thumb_tip" mocap="true" pos="-0.25 -0.53 0.77">
+    <body name="mano_right_thumb_tip" mocap="true" pos="-0.2177 -0.4252 0.7959">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.2 0.2 0.5"/>
     </body>
-    <body name="mano_right_index_tip" mocap="true" pos="-0.19 -0.48 0.81">
+    <body name="mano_right_index_tip" mocap="true" pos="-0.1411 -0.4773 0.8166">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.2 0.4 0.9 0.5"/>
     </body>
-    <body name="mano_right_middle_tip" mocap="true" pos="-0.19 -0.50 0.81">
+    <body name="mano_right_middle_tip" mocap="true" pos="-0.1345 -0.5158 0.8182">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.8 0.1 0.5"/>
     </body>
-    <body name="mano_right_ring_tip" mocap="true" pos="-0.19 -0.52 0.81">
+    <body name="mano_right_ring_tip" mocap="true" pos="-0.1503 -0.5446 0.8153">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.5 0.1 0.5"/>
     </body>
-    <body name="mano_right_little_tip" mocap="true" pos="-0.19 -0.55 0.81">
+    <body name="mano_right_little_tip" mocap="true" pos="-0.1858 -0.5742 0.8089">
       <geom class="mano_mocap_geom" type="sphere" size="0.006" rgba="0.5 0.5 0.5 0.4"/>
     </body>
 
     <!-- RIGHT HAND Articulated Body -->
-    <body name="mano_R_hand" pos="-0.30 -0.50 0.82" quat="0.5 0.5 -0.5 -0.5" childclass="mano_hand">
+    <body name="mano_R_hand" pos="-0.30 -0.50 0.82" quat="0 0 0.7071 0.7071" childclass="mano_hand">
       <freejoint name="mano_R_free"/>
       <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
       <geom name="mano_R_palm" type="mesh" mesh="mano_R_palm"/>
@@ -188,29 +188,29 @@
     </body>
 
     <!-- ==================== LEFT HAND Mocap Targets ==================== -->
-    <!-- Palms-down orientation, Y-mirrored finger layout for left hand -->
-    <body name="mano_left_wrist" mocap="true" pos="-0.30 0.52 0.82" quat="0.5 0.5 -0.5 -0.5">
+    <!-- Palm-down orientation, Y-mirrored finger layout for left hand -->
+    <body name="mano_left_wrist" mocap="true" pos="-0.30 0.52 0.82" quat="0 0 -0.7071 0.7071">
       <geom class="mano_mocap_geom" type="sphere" size="0.012" rgba="0.2 0.8 0.2 0.5"/>
       <site name="mano_left_wrist_site" size="0.001"/>
     </body>
-    <body name="mano_left_thumb_tip" mocap="true" pos="-0.25 0.55 0.77">
+    <body name="mano_left_thumb_tip" mocap="true" pos="-0.2177 0.4452 0.7959">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.2 0.2 0.5"/>
     </body>
-    <body name="mano_left_index_tip" mocap="true" pos="-0.19 0.50 0.81">
+    <body name="mano_left_index_tip" mocap="true" pos="-0.1411 0.4973 0.8166">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.2 0.4 0.9 0.5"/>
     </body>
-    <body name="mano_left_middle_tip" mocap="true" pos="-0.19 0.52 0.81">
+    <body name="mano_left_middle_tip" mocap="true" pos="-0.1345 0.5358 0.8182">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.8 0.1 0.5"/>
     </body>
-    <body name="mano_left_ring_tip" mocap="true" pos="-0.19 0.54 0.81">
+    <body name="mano_left_ring_tip" mocap="true" pos="-0.1503 0.5646 0.8153">
       <geom class="mano_mocap_geom" type="sphere" size="0.008" rgba="0.9 0.5 0.1 0.5"/>
     </body>
-    <body name="mano_left_little_tip" mocap="true" pos="-0.19 0.57 0.81">
+    <body name="mano_left_little_tip" mocap="true" pos="-0.1858 0.5942 0.8089">
       <geom class="mano_mocap_geom" type="sphere" size="0.006" rgba="0.5 0.5 0.5 0.4"/>
     </body>
 
     <!-- LEFT HAND Articulated Body (Y-mirrored from right hand) -->
-    <body name="mano_L_hand" pos="-0.30 0.52 0.82" quat="0.5 0.5 -0.5 -0.5" childclass="mano_hand">
+    <body name="mano_L_hand" pos="-0.30 0.52 0.82" quat="0 0 -0.7071 0.7071" childclass="mano_hand">
       <freejoint name="mano_L_free"/>
       <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
       <geom name="mano_L_palm" type="mesh" mesh="mano_L_palm"/>

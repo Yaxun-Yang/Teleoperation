@@ -309,12 +309,3 @@ class HandRetargeter:
 
         self._prev_q = result
         return result
-
-    def get_fingertip_positions(self, allegro_q: np.ndarray) -> dict:
-        """Compute Allegro fingertip positions from joint angles (for debugging)."""
-        positions = {}
-        for finger_name in ['index', 'middle', 'ring', 'thumb']:
-            chain = self._chains[finger_name]
-            s = _ALLEGRO_SLICES[finger_name]
-            positions[finger_name] = _finger_fk(allegro_q[s], chain)
-        return positions

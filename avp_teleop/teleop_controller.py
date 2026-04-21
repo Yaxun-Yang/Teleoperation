@@ -74,6 +74,7 @@ class StandaloneTeleopController:
         # Frame-to-frame delta tracking state
         self._prev_mano_wrist = {'left': None, 'right': None}
         self._arm_target = {'left': None, 'right': None}
+        self._arm_target_rot = {'left': None, 'right': None}
 
         # Build actuator index maps
         self._actuator_map = {}
@@ -110,11 +111,8 @@ class StandaloneTeleopController:
         # Physics substeps: run multiple physics steps per control step for real-time
         self._n_substeps = max(1, round(self._dt / self._model.opt.timestep))
 
-        # Set initial arm configuration (natural reaching pose, palms roughly down)
-        home_q = np.array([0, -0.785, 0, -2.356, 0, 1.571, 0.785])
-        for side in ['left', 'right']:
-            arm = self._left_arm if side == 'left' else self._right_arm
-            arm.set_joint_positions(home_q)
+        # Load home keyframe (sets arms, hands, and MANO positions all at once)
+        mujoco.mj_resetDataKeyframe(self._model, self._data, 0)
         mujoco.mj_forward(self._model, self._data)
 
         # Initialize ALL position actuator ctrl to match current joint positions.
@@ -126,6 +124,20 @@ class StandaloneTeleopController:
             for act_id in hand_act_ids:
                 joint_id = self._model.actuator_trnid[act_id, 0]
                 self._data.ctrl[act_id] = self._data.qpos[self._model.jnt_qposadr[joint_id]]
+
+        # Pre-settle: run physics to let the arm reach its gravity equilibrium.
+        # Without this, the PD controller causes visible oscillation in the
+        # first ~2 seconds as joints settle under gravity.
+        for _ in range(2000):  # 4 seconds at 0.002 timestep
+            mujoco.mj_step(self._model, self._data)
+        mujoco.mj_forward(self._model, self._data)
+
+        # Store settled state for viewer-reset recovery.
+        # NOTE: do NOT modify m.qpos0 — MuJoCo computes kinematics as
+        # Rot(axis, qpos - qpos0), so changing qpos0 shifts the reference
+        # frame and makes the arm appear in the wrong configuration.
+        self._home_qpos = self._data.qpos.copy()
+        self._home_ctrl = self._data.ctrl.copy()
 
         print(f"Controller initialized:")
         print(f"  Left arm actuators: {self._left_arm_act_ids}")
@@ -161,6 +173,7 @@ class StandaloneTeleopController:
                 # Reset tracking state so first engaged frame initializes them
                 self._prev_mano_wrist = {'left': None, 'right': None}
                 self._arm_target = {'left': None, 'right': None}
+                self._arm_target_rot = {'left': None, 'right': None}
                 print("[ENGAGED] Tracking MANO -> robot. Press 'S' to stop.")
             else:
                 print("[DISENGAGED] Robots holding position. Press 'S' to engage.")
@@ -190,19 +203,21 @@ class StandaloneTeleopController:
 
             wrist_pos = tracking[f'{side}_wrist_pos']
 
-            # --- ARM: frame-to-frame delta tracking ---
+            # --- ARM: frame-to-frame delta tracking (6D: position + orientation) ---
             if self._prev_mano_wrist[side] is None:
                 # First engaged frame: initialise, no movement yet
                 self._prev_mano_wrist[side] = wrist_pos.copy()
-                ee_pos, _ = arm.get_ee_pose()
+                ee_pos, ee_rot = arm.get_ee_pose()
                 self._arm_target[side] = ee_pos.copy()
+                self._arm_target_rot[side] = ee_rot.copy()
             else:
                 # Compute frame delta and accumulate into target
                 delta = wrist_pos - self._prev_mano_wrist[side]
                 self._prev_mano_wrist[side] = wrist_pos.copy()
                 self._arm_target[side] = self._arm_target[side] + delta
 
-            arm_q = arm.solve_absolute(self._arm_target[side])
+            arm_q = arm.solve_absolute(
+                self._arm_target[side], target_rot=self._arm_target_rot[side])
             self._apply_arm_control(side, arm_q)
 
             # --- HAND: absolute retargeting (fingertip-to-palm in Allegro frame) ---
@@ -264,18 +279,34 @@ class StandaloneTeleopController:
         print("Press 'S' in the viewer to toggle robot engagement.")
         print("[DISENGAGED] Robots holding position. Press 'S' to engage.")
 
-        # Initial forward pass
+        # Ensure ctrl is set before viewer opens (prevents first-frame drift)
+        self._data.ctrl[:] = self._home_ctrl[:]
         mujoco.mj_forward(self._model, self._data)
 
         with mujoco.viewer.launch_passive(
             self._model, self._data,
             key_callback=self._key_callback
         ) as viewer:
+            # Re-apply ctrl in case launch_passive reset data
+            self._data.ctrl[:] = self._home_ctrl[:]
+
             start_time = time.time()
             step_count = 0
 
             while viewer.is_running():
                 step_start = time.time()
+
+                # Detect viewer reset (ctrl zeroed by backspace) and restore home
+                if self._data.time == 0.0 and step_count > 0:
+                    # Restore settled state (not keyframe — avoids re-settling)
+                    self._data.qpos[:] = self._home_qpos[:]
+                    self._data.qvel[:] = 0
+                    self._data.ctrl[:] = self._home_ctrl[:]
+                    mujoco.mj_forward(self._model, self._data)
+                    self._engaged = False
+                    self._prev_mano_wrist = {'left': None, 'right': None}
+                    self._arm_target = {'left': None, 'right': None}
+                    self._arm_target_rot = {'left': None, 'right': None}
 
                 self.step()
                 viewer.sync()
