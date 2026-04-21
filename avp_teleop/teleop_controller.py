@@ -134,9 +134,11 @@ class StandaloneTeleopController:
         self._source = source
         self._needs_avp_transform = False
 
-        # Engagement state
+        # Engagement state (modified from key callback, consumed in main loop)
         self._engaged = False
         self._calibrated = False
+        self._calibrate_requested = False
+        self._toggle_engage_requested = False
 
         # ---- mink configuration (separate kinematic copy for IK) ----
         self._configuration = mink.Configuration(self._model)
@@ -322,10 +324,25 @@ class StandaloneTeleopController:
         print("[CALIBRATED] Reference poses captured. Press 'S' to engage.")
 
     def _key_callback(self, keycode):
-        """Handle viewer key events."""
+        """Handle viewer key events.
+
+        Only sets flags here — actual work is done in the main loop to avoid
+        thread-safety issues (viewer callback runs on the render thread while
+        mj_step runs on the main thread).
+        """
         if keycode == ord('C'):
-            self._calibrate()
+            self._calibrate_requested = True
         elif keycode == ord('S'):
+            self._toggle_engage_requested = True
+
+    def _process_key_requests(self):
+        """Process deferred key requests on the main thread (safe for MuJoCo)."""
+        if self._calibrate_requested:
+            self._calibrate_requested = False
+            self._calibrate()
+
+        if self._toggle_engage_requested:
+            self._toggle_engage_requested = False
             if not self._calibrated:
                 self._calibrate()
                 if not self._calibrated:
@@ -470,6 +487,7 @@ class StandaloneTeleopController:
                         arm.q_hand_cmd = self._configuration.q[arm.hand_qpos_adr].copy()
                     print("[RESET] Viewer reset. Press 'C' to calibrate.")
 
+                self._process_key_requests()
                 self.step()
                 viewer.sync()
                 step_count += 1
