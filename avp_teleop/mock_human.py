@@ -10,7 +10,7 @@ Each hand has 6 drag points:
   - Index tip (blue) — controls index joints
   - Middle tip (yellow) — controls middle joints
   - Ring tip (orange) — controls ring joints
-  - Little tip (gray) — visualized but ignored (Allegro has no pinky)
+  - Little tip (gray) — visualized but used only for DexPilot spread vectors
 """
 import numpy as np
 import mujoco
@@ -19,17 +19,24 @@ from avp_teleop.avp_interface import HandTrackingSource
 
 _FINGER_NAMES = ['thumb', 'index', 'middle', 'ring', 'little']
 
+# AVP HandSkeleton tip indices used for finger data
+_TIP_INDICES = {
+    'thumb': 4,
+    'index': 9,
+    'middle': 14,
+    'ring': 19,
+    'little': 24,
+}
+
 
 class ManoMockHuman(HandTrackingSource):
     """Interactive mock using draggable mocap bodies in the MuJoCo viewer.
 
     Reads mocap_pos/mocap_quat from the MuJoCo data for 12 bodies (6 per hand).
-    Returns wrist poses and fingertip positions in world frame.
+    Returns data in the standard AVP format (4x4 wrist transforms, 25x4x4 finger
+    keypoint arrays) so the same controller code path works for both mock and AVP.
 
-    When the wrist is dragged, all fingertip markers follow as a rigid body
-    so the whole hand moves together.
-
-    Must be created after the MuJoCo model is loaded, since it needs model/data refs.
+    When the wrist is dragged, all fingertip markers follow as a rigid body.
     """
 
     def __init__(self, model: mujoco.MjModel, data: mujoco.MjData):
@@ -61,11 +68,9 @@ class ManoMockHuman(HandTrackingSource):
             }
 
     def _get_mocap_pos(self, name: str) -> np.ndarray:
-        """Get world position of a mocap body."""
         return self._data.mocap_pos[self._mocap_ids[name]].copy()
 
     def _get_mocap_quat(self, name: str) -> np.ndarray:
-        """Get quaternion [w,x,y,z] of a mocap body."""
         return self._data.mocap_quat[self._mocap_ids[name]].copy()
 
     @staticmethod
@@ -76,10 +81,7 @@ class ManoMockHuman(HandTrackingSource):
     def sync_fingertips_to_wrist(self):
         """Make all fingertip mocap markers follow the wrist as a rigid body.
 
-        Call this each frame BEFORE reading tracking data. When the user drags
-        the wrist marker, all fingertip markers move with it (translation +
-        rotation). Individually dragged fingertips are unaffected because the
-        wrist delta will be zero on those frames.
+        Call this each frame BEFORE reading tracking data.
         """
         for side in ['left', 'right']:
             wrist_mid = self._mocap_ids[f'mano_{side}_wrist']
@@ -103,40 +105,44 @@ class ManoMockHuman(HandTrackingSource):
                     name = f'mano_{side}_{finger}_tip'
                     mid = self._mocap_ids[name]
                     fpos = self._data.mocap_pos[mid].copy()
-
-                    # Rigid-body transform: rotate offset around wrist, then translate
                     relative = fpos - prev_pos
                     new_relative = r_delta.apply(relative)
                     self._data.mocap_pos[mid] = curr_pos + new_relative
 
-            # Always update tracking state so next delta is from latest frame
             self._prev_wrist[side]['pos'] = curr_pos
             self._prev_wrist[side]['quat'] = curr_quat
 
     def get_latest(self) -> dict:
-        """Read current mocap body states.
-
-        Automatically syncs fingertip markers to follow wrist movement first.
+        """Read current mocap body states in standard AVP format.
 
         Returns dict with:
-            left_wrist_pos: (3,) world position
-            left_wrist_quat: (4,) [w,x,y,z] quaternion
-            left_fingertips: dict of 'thumb','index','middle','ring' -> (3,) world positions
-            right_wrist_pos, right_wrist_quat, right_fingertips: same for right hand
+            head: (4,4) identity (no head tracking in mock mode)
+            left_wrist / right_wrist: (4,4) wrist transforms in MuJoCo world frame
+            left_fingers / right_fingers: (25,4,4) finger keypoint arrays with
+                tip positions at the standard AVP indices (4,9,14,19,24)
         """
-        # Sync fingertips to follow any wrist movement before reading
         self.sync_fingertips_to_wrist()
 
-        result = {}
+        result = {'head': np.eye(4)}
         for side in ['left', 'right']:
-            result[f'{side}_wrist_pos'] = self._get_mocap_pos(f'mano_{side}_wrist')
-            result[f'{side}_wrist_quat'] = self._get_mocap_quat(f'mano_{side}_wrist')
-            result[f'{side}_fingertips'] = {
-                'thumb': self._get_mocap_pos(f'mano_{side}_thumb_tip'),
-                'index': self._get_mocap_pos(f'mano_{side}_index_tip'),
-                'middle': self._get_mocap_pos(f'mano_{side}_middle_tip'),
-                'ring': self._get_mocap_pos(f'mano_{side}_ring_tip'),
-            }
+            # Build 4x4 wrist transform from mocap pos + quat
+            wrist_pos = self._get_mocap_pos(f'mano_{side}_wrist')
+            wrist_quat = self._get_mocap_quat(f'mano_{side}_wrist')
+
+            T_wrist = np.eye(4)
+            R_flat = np.empty(9)
+            mujoco.mju_quat2Mat(R_flat, wrist_quat)
+            T_wrist[:3, :3] = R_flat.reshape(3, 3)
+            T_wrist[:3, 3] = wrist_pos
+            result[f'{side}_wrist'] = T_wrist
+
+            # Build (25,4,4) finger keypoints with tips at AVP indices
+            fingers = np.tile(np.eye(4), (25, 1, 1))
+            for finger_name, tip_idx in _TIP_INDICES.items():
+                tip_pos = self._get_mocap_pos(f'mano_{side}_{finger_name}_tip')
+                fingers[tip_idx, :3, 3] = tip_pos
+            result[f'{side}_fingers'] = fingers
+
         return result
 
     def is_connected(self) -> bool:

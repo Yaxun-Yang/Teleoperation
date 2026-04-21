@@ -2,284 +2,440 @@
 Main teleoperation controller for dual Panda + Allegro.
 Standalone MuJoCo mode: no ROS2 dependency.
 
-Press 'S' in the viewer to toggle engagement:
-  - Engaged: MANO hand movement is retargeted to the robot in real time.
-    Arms use frame-to-frame delta tracking (difference between current and
-    previous MANO wrist positions applied to robot EE).
-    Hands use absolute retargeting: fingertip-to-palm distance from MANO
-    is directly reflected to Allegro (MANO fingers shaped to Allegro lengths).
-  - Disengaged: robots hold their current position; MANO hands move freely.
+Pipeline per tick:
+  1) Pull latest tracking sample (wrists + 25 finger keypoints per hand).
+  2) DexPilot-retarget the finger keypoints -> 16 Allegro joint angles per hand.
+  3) Freeze hand joints in a kinematic mink copy, compose EE pose targets
+     from wrist deltas relative to a calibrated reference pose.
+  4) Solve bimanual IK with mink to get 7 Panda joint targets per arm.
+  5) Low-pass filter commands and apply to MuJoCo actuators.
+
+Controls:
+  'C' — Calibrate: capture current tracking + robot EE poses as origin.
+  'S' — Toggle engage/disengage (auto-calibrates if not yet calibrated).
 """
 import os
 import time
+from dataclasses import dataclass, field
+from typing import Optional, Dict
+
 import numpy as np
 import mujoco
 import mujoco.viewer
+import mink
 
-from avp_teleop.arm_retargeter import ArmRetargeter
-from avp_teleop.hand_retargeter import HandRetargeter
 from avp_teleop.avp_interface import HandTrackingSource
+from avp_teleop.hand_retargeter import HandRetargeter
 
 
-# Default model path
+# ---------------------------------------------------------------------------
+# Default paths
+# ---------------------------------------------------------------------------
+
 _DEFAULT_MODEL = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'multipanda_ros2', 'franka_description', 'mujoco', 'franka',
     'mj_dual_allegro_scene.xml'
 )
 
+_DEFAULT_DEX_URDF = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'dex-urdf', 'robots', 'hands'
+)
+
+
+# ---------------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------------
+
+# Rotation from AVP (Y-up, headset origin) to MuJoCo world (Z-up).
+# Operator faces +X of the robot workspace.
+_R_AVP_TO_MJ = np.array([
+    [-1.0,  0.0,  0.0],
+    [ 0.0,  0.0,  1.0],
+    [ 0.0,  1.0,  0.0],
+], dtype=float)
+
+
+def _se3_inv(T: np.ndarray) -> np.ndarray:
+    """Invert a 4x4 rigid transform without np.linalg.inv."""
+    R = T[:3, :3]
+    p = T[:3, 3]
+    Ti = np.eye(4)
+    Ti[:3, :3] = R.T
+    Ti[:3, 3] = -R.T @ p
+    return Ti
+
+
+# Panda home joint angles (typical "ready" pose)
+_Q_REST = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+
+
+# ---------------------------------------------------------------------------
+# Per-arm runtime state
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ArmState:
+    """Per-arm runtime state: calibration, IK task, filtered commands."""
+    side: str                                       # 'left' or 'right'
+    avp_side: str                                   # which AVP hand drives this arm
+
+    # Joint addresses in the model's qpos vector
+    panda_joint_names: list = field(default_factory=list)
+    hand_joint_names: list = field(default_factory=list)
+    panda_qpos_adr: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
+    hand_qpos_adr: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
+
+    # mink FrameTask targeting the EE site
+    frame_task: Optional[mink.FrameTask] = None
+
+    # DexPilot hand retargeter
+    hand_retargeter: Optional[HandRetargeter] = None
+
+    # Calibration references
+    T_wrist_ref: Optional[np.ndarray] = None        # AVP wrist at calibration
+    T_ee_ref: Optional[np.ndarray] = None            # Robot EE at calibration
+
+    # Filtered commands
+    q_arm_cmd: Optional[np.ndarray] = None
+    q_arm_vel_cmd: Optional[np.ndarray] = None
+    q_hand_cmd: Optional[np.ndarray] = None
+
+
+# ---------------------------------------------------------------------------
+# Main controller
+# ---------------------------------------------------------------------------
 
 class StandaloneTeleopController:
-    """Standalone teleoperation controller using MuJoCo Python bindings.
+    """Standalone teleoperation controller using mink IK + DexPilot retargeting.
 
-    Connects a HandTrackingSource (mock or AVP) to dual Panda arms with Allegro hands.
-    Runs the IK + retargeting + physics loop and visualizes in MuJoCo viewer.
+    Connects a HandTrackingSource (mock or AVP) to dual Panda arms with
+    Allegro hands. Runs physics + visualization in MuJoCo viewer.
 
-    Press 'S' to toggle engagement. While engaged:
-    - Arms: frame-to-frame delta tracking. Each frame computes the MANO wrist
-      position change (in world/simulator coordinates) and applies the same
-      displacement to the robot arm target (in robot base coordinates).
-    - Hands: absolute retargeting. The fingertip-to-palm vector from MANO
-      (in world frame) is transformed into the Allegro hand frame and used
-      directly as the IK target. MANO fingertip positions are pre-shaped to
-      match Allegro finger lengths so no extra scaling is needed.
-    While disengaged the robots hold their last commanded position.
-
-    Supports two source types:
-    - ManoMockHuman: draggable mocap bodies in MuJoCo viewer (direct fingertip positions)
-    - AVPStreamer/other: AVP-format 25-joint hand skeleton (delta-pose retargeting)
+    Press 'C' to calibrate (capture reference poses), then 'S' to engage.
+    While engaged the robots track the operator's hands. While disengaged
+    the robots hold their last commanded position.
     """
 
     def __init__(self, model_path: str = None, source: HandTrackingSource = None,
-                 control_freq: float = 100.0):
-        """
-        Args:
-            model_path: Path to MuJoCo XML scene file.
-            source: HandTrackingSource instance, or None (set later via set_source).
-            control_freq: Target control loop frequency in Hz.
-        """
+                 control_freq: float = 100.0, dex_urdf_dir: str = None):
         if model_path is None:
             model_path = _DEFAULT_MODEL
+        if dex_urdf_dir is None:
+            dex_urdf_dir = _DEFAULT_DEX_URDF
 
         print(f"Loading model: {model_path}")
         self._model = mujoco.MjModel.from_xml_path(model_path)
         self._data = mujoco.MjData(self._model)
-
-        self._source = source
-        self._is_mano = False
         self._dt = 1.0 / control_freq
 
-        # Engagement state (toggled by 'S' key in viewer)
-        self._engaged = False
-        # Frame-to-frame delta tracking state
-        self._prev_mano_wrist = {'left': None, 'right': None}
-        self._arm_target = {'left': None, 'right': None}
-        self._arm_target_rot = {'left': None, 'right': None}
+        # Source
+        self._source = source
+        self._needs_avp_transform = False
 
-        # Build actuator index maps
+        # Engagement state
+        self._engaged = False
+        self._calibrated = False
+
+        # ---- mink configuration (separate kinematic copy for IK) ----
+        self._configuration = mink.Configuration(self._model)
+
+        # ---- Build per-arm state ----
+        self._arms: Dict[str, _ArmState] = {}
+        for side, avp_side in [('left', 'left'), ('right', 'right')]:
+            arm = _ArmState(side=side, avp_side=avp_side)
+
+            arm.panda_joint_names = [f'mj_{side}_joint{i}' for i in range(1, 8)]
+            arm.hand_joint_names = [f'mj_{side}_allegro_joint_{i}_0' for i in range(16)]
+            arm.panda_qpos_adr = np.array(
+                [self._model.joint(j).qposadr[0] for j in arm.panda_joint_names],
+                dtype=int,
+            )
+            arm.hand_qpos_adr = np.array(
+                [self._model.joint(j).qposadr[0] for j in arm.hand_joint_names],
+                dtype=int,
+            )
+
+            arm.frame_task = mink.FrameTask(
+                frame_name=f'mj_{side}_ee_site',
+                frame_type='site',
+                position_cost=1.0,
+                orientation_cost=0.3,
+                lm_damping=5.0,
+            )
+
+            arm.hand_retargeter = HandRetargeter(
+                side=side, dex_urdf_dir=dex_urdf_dir,
+            )
+
+            self._arms[side] = arm
+
+        # ---- Actuator maps ----
         self._actuator_map = {}
         for i in range(self._model.nu):
             name = mujoco.mj_id2name(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
             self._actuator_map[name] = i
 
-        # Arm retargeters
-        self._left_arm = ArmRetargeter(self._model, self._data, 'left')
-        self._right_arm = ArmRetargeter(self._model, self._data, 'right')
+        self._arm_act_ids = {
+            s: [self._actuator_map[f'mj_{s}_act_pos{i}'] for i in range(1, 8)]
+            for s in ('left', 'right')
+        }
+        self._hand_act_ids = {
+            s: [self._actuator_map[f'mj_{s}_allegro_act_joint_{i}_0'] for i in range(16)]
+            for s in ('left', 'right')
+        }
 
-        # Hand retargeters (scale=1.0: MANO fingertips already shaped to Allegro lengths)
-        self._left_hand = HandRetargeter(hand_scale=1.0, side='left')
-        self._right_hand = HandRetargeter(hand_scale=1.0, side='right')
-
-        # Position actuator indices for arms
-        self._left_arm_act_ids = [self._actuator_map[f'mj_left_act_pos{i}'] for i in range(1, 8)]
-        self._right_arm_act_ids = [self._actuator_map[f'mj_right_act_pos{i}'] for i in range(1, 8)]
-
-        # Position actuator indices for Allegro hands
-        self._left_hand_act_ids = [
-            self._actuator_map[f'mj_left_allegro_act_joint_{i}_0'] for i in range(16)
-        ]
-        self._right_hand_act_ids = [
-            self._actuator_map[f'mj_right_allegro_act_joint_{i}_0'] for i in range(16)
+        # ---- Shared mink tasks and limits ----
+        self._posture = mink.PostureTask(self._model, cost=5e-2)
+        self._tasks = [
+            self._arms['left'].frame_task,
+            self._arms['right'].frame_task,
+            self._posture,
         ]
 
-        # EE site IDs for computing hand-local fingertip positions
-        self._left_ee_site = mujoco.mj_name2id(
-            self._model, mujoco.mjtObj.mjOBJ_SITE, 'mj_left_ee_site')
-        self._right_ee_site = mujoco.mj_name2id(
-            self._model, mujoco.mjtObj.mjOBJ_SITE, 'mj_right_ee_site')
+        vel_limits = {}
+        for side in ('left', 'right'):
+            for j in self._arms[side].panda_joint_names:
+                vel_limits[j] = 1.0  # rad/s
+        self._limits = [
+            mink.ConfigurationLimit(self._model),
+            mink.VelocityLimit(self._model, vel_limits),
+        ]
 
-        # Physics substeps: run multiple physics steps per control step for real-time
-        self._n_substeps = max(1, round(self._dt / self._model.opt.timestep))
+        # ---- Smoothing / safety parameters ----
+        self._smooth_tau_arm = 0.20       # seconds (arm low-pass time constant)
+        self._smooth_tau_hand = 0.03      # seconds (hand low-pass time constant)
+        self._accel_limit = 8.0           # rad/s^2 per joint
+        self._vel_limit = 1.0             # rad/s per joint
+        self._ws_box_lo = np.array([-0.7, -0.9, 0.3])  # workspace safety box
+        self._ws_box_hi = np.array([ 0.9,  0.9, 1.8])
 
-        # Load home keyframe (sets arms, hands, and MANO positions all at once)
+        # ---- Initialize from keyframe ----
         mujoco.mj_resetDataKeyframe(self._model, self._data, 0)
         mujoco.mj_forward(self._model, self._data)
 
-        # Initialize ALL position actuator ctrl to match current joint positions.
-        # This prevents unwanted drift when disengaged (PD controller target = current pos).
-        for side in ['left', 'right']:
-            arm = self._left_arm if side == 'left' else self._right_arm
-            self._apply_arm_control(side, arm.get_joint_positions())
-            hand_act_ids = self._left_hand_act_ids if side == 'left' else self._right_hand_act_ids
-            for act_id in hand_act_ids:
-                joint_id = self._model.actuator_trnid[act_id, 0]
-                self._data.ctrl[act_id] = self._data.qpos[self._model.jnt_qposadr[joint_id]]
+        q_init = self._data.qpos.copy()
+        self._configuration.update(q_init)
+        self._posture.set_target_from_configuration(self._configuration)
 
-        # Pre-settle: run physics to let the arm reach its gravity equilibrium.
-        # Without this, the PD controller causes visible oscillation in the
-        # first ~2 seconds as joints settle under gravity.
-        for _ in range(2000):  # 4 seconds at 0.002 timestep
+        # Seed per-arm commands from initial state
+        for arm in self._arms.values():
+            arm.q_arm_cmd = self._configuration.q[arm.panda_qpos_adr].copy()
+            arm.q_arm_vel_cmd = np.zeros(7)
+            arm.q_hand_cmd = self._configuration.q[arm.hand_qpos_adr].copy()
+
+        # Initialize all actuator ctrl to match current joint positions
+        for side in ('left', 'right'):
+            arm = self._arms[side]
+            for i, act_id in enumerate(self._arm_act_ids[side]):
+                self._data.ctrl[act_id] = arm.q_arm_cmd[i]
+            for i, act_id in enumerate(self._hand_act_ids[side]):
+                self._data.ctrl[act_id] = arm.q_hand_cmd[i]
+
+        # Physics substeps
+        self._n_substeps = max(1, round(self._dt / self._model.opt.timestep))
+
+        # Pre-settle physics (avoid oscillation on first frames)
+        for _ in range(2000):
             mujoco.mj_step(self._model, self._data)
         mujoco.mj_forward(self._model, self._data)
 
-        # Store settled state for viewer-reset recovery.
-        # NOTE: do NOT modify m.qpos0 — MuJoCo computes kinematics as
-        # Rot(axis, qpos - qpos0), so changing qpos0 shifts the reference
-        # frame and makes the arm appear in the wrong configuration.
         self._home_qpos = self._data.qpos.copy()
         self._home_ctrl = self._data.ctrl.copy()
 
-        print(f"Controller initialized:")
-        print(f"  Left arm actuators: {self._left_arm_act_ids}")
-        print(f"  Right arm actuators: {self._right_arm_act_ids}")
-        print(f"  Left hand actuators (16): [{self._left_hand_act_ids[0]}..{self._left_hand_act_ids[-1]}]")
-        print(f"  Right hand actuators (16): [{self._right_hand_act_ids[0]}..{self._right_hand_act_ids[-1]}]")
-        print(f"  Physics substeps per control step: {self._n_substeps}")
+        print(f"Controller initialized (mink IK + DexPilot hand retargeting)")
+        print(f"  Control rate: {control_freq} Hz, substeps: {self._n_substeps}")
+        print(f"  Press 'C' to calibrate, 'S' to engage/disengage")
+
+    # ------------------------------------------------------------------
+    # Source management
+    # ------------------------------------------------------------------
 
     def set_source(self, source: HandTrackingSource):
-        """Set the tracking source after construction (needed for ManoMockHuman)."""
-        from avp_teleop.mock_human import ManoMockHuman
+        """Set the tracking source (needed for ManoMockHuman which requires model/data)."""
+        from avp_teleop.avp_streamer import AVPStreamer
         self._source = source
-        self._is_mano = isinstance(source, ManoMockHuman)
+        self._needs_avp_transform = isinstance(source, AVPStreamer)
 
-    def _apply_arm_control(self, side: str, joint_positions: np.ndarray):
-        """Apply arm joint positions via position actuators."""
-        act_ids = self._left_arm_act_ids if side == 'left' else self._right_arm_act_ids
-        for i, act_id in enumerate(act_ids):
-            self._data.ctrl[act_id] = joint_positions[i]
+    # ------------------------------------------------------------------
+    # Coordinate transform
+    # ------------------------------------------------------------------
 
-    def _apply_hand_control(self, side: str, allegro_q: np.ndarray):
-        """Apply Allegro hand joint positions via position actuators."""
-        act_ids = self._left_hand_act_ids if side == 'left' else self._right_hand_act_ids
-        for i, act_id in enumerate(act_ids):
-            self._data.ctrl[act_id] = allegro_q[i]
+    def _compose_ee_target(self, arm: _ArmState, T_wrist_now: np.ndarray) -> np.ndarray:
+        """Compute the 4x4 robot EE target from wrist delta since calibration."""
+        # Wrist delta in source frame
+        dT = T_wrist_now @ _se3_inv(arm.T_wrist_ref)
+
+        # Convert delta to MuJoCo frame if source is AVP
+        if self._needs_avp_transform:
+            R4 = np.eye(4)
+            R4[:3, :3] = _R_AVP_TO_MJ
+            dT = R4 @ dT @ _se3_inv(R4)
+
+        # Apply delta to robot EE reference
+        T_target = dT @ arm.T_ee_ref
+
+        # Workspace safety clamp (translation only)
+        T_target[:3, 3] = np.clip(
+            T_target[:3, 3], self._ws_box_lo, self._ws_box_hi)
+
+        return T_target
+
+    # ------------------------------------------------------------------
+    # Calibration & engagement
+    # ------------------------------------------------------------------
+
+    def _calibrate(self):
+        """Capture current tracking + robot EE poses as the engagement origin."""
+        if self._source is None:
+            print("[CALIBRATE] No source connected.")
+            return
+
+        tracking = self._source.get_latest()
+
+        bad = []
+        for side, arm in self._arms.items():
+            T_wrist = tracking[f'{arm.avp_side}_wrist']
+            t = T_wrist[:3, 3]
+            if not np.isfinite(T_wrist).all() or float(np.linalg.norm(t)) < 1e-6:
+                bad.append(f"{side}({arm.avp_side})")
+
+        if bad:
+            print(f"[CALIBRATE] Warning: wrists not tracked: {', '.join(bad)}. "
+                  "Put both hands in view and retry.")
+            return
+
+        mujoco.mj_forward(self._model, self._data)
+        for side, arm in self._arms.items():
+            arm.T_wrist_ref = tracking[f'{arm.avp_side}_wrist'].copy()
+
+            site_name = f'mj_{side}_ee_site'
+            site_id = mujoco.mj_name2id(
+                self._model, mujoco.mjtObj.mjOBJ_SITE, site_name)
+            T_ee = np.eye(4)
+            T_ee[:3, :3] = self._data.site_xmat[site_id].reshape(3, 3).copy()
+            T_ee[:3, 3] = self._data.site_xpos[site_id].copy()
+            arm.T_ee_ref = T_ee
+
+        self._calibrated = True
+        print("[CALIBRATED] Reference poses captured. Press 'S' to engage.")
 
     def _key_callback(self, keycode):
-        """Handle viewer key events. 'S' toggles engagement."""
-        # GLFW key code for 'S' is ord('S') == 83
-        if keycode == ord('S'):
+        """Handle viewer key events."""
+        if keycode == ord('C'):
+            self._calibrate()
+        elif keycode == ord('S'):
+            if not self._calibrated:
+                self._calibrate()
+                if not self._calibrated:
+                    return
             self._engaged = not self._engaged
             if self._engaged:
-                # Reset tracking state so first engaged frame initializes them
-                self._prev_mano_wrist = {'left': None, 'right': None}
-                self._arm_target = {'left': None, 'right': None}
-                self._arm_target_rot = {'left': None, 'right': None}
-                print("[ENGAGED] Tracking MANO -> robot. Press 'S' to stop.")
+                print("[ENGAGED] Tracking active. Press 'S' to stop.")
             else:
                 print("[DISENGAGED] Robots holding position. Press 'S' to engage.")
 
-    def _step_mano(self):
-        """Control step for ManoMockHuman source.
-
-        Always syncs MANO hand visualization (mocap bodies move freely).
-        Only updates robot controls when engaged (toggled by 'S' key).
-        Arms: frame-to-frame delta — each frame computes the wrist position
-              change and accumulates it into the robot arm target.
-        Hands: absolute retargeting — fingertip-to-wrist offset (world frame)
-               is transformed into the Allegro hand frame via EE site rotation.
-        """
-        tracking = self._source.get_latest()
-
-        if not self._engaged:
-            # Robots hold position; just step physics
-            for _ in range(self._n_substeps):
-                mujoco.mj_step(self._model, self._data)
-            return
-
-        for side in ['left', 'right']:
-            arm = self._left_arm if side == 'left' else self._right_arm
-            hand = self._left_hand if side == 'left' else self._right_hand
-            ee_site_id = self._left_ee_site if side == 'left' else self._right_ee_site
-
-            wrist_pos = tracking[f'{side}_wrist_pos']
-
-            # --- ARM: frame-to-frame delta tracking (6D: position + orientation) ---
-            if self._prev_mano_wrist[side] is None:
-                # First engaged frame: initialise, no movement yet
-                self._prev_mano_wrist[side] = wrist_pos.copy()
-                ee_pos, ee_rot = arm.get_ee_pose()
-                self._arm_target[side] = ee_pos.copy()
-                self._arm_target_rot[side] = ee_rot.copy()
-            else:
-                # Compute frame delta and accumulate into target
-                delta = wrist_pos - self._prev_mano_wrist[side]
-                self._prev_mano_wrist[side] = wrist_pos.copy()
-                self._arm_target[side] = self._arm_target[side] + delta
-
-            arm_q = arm.solve_absolute(
-                self._arm_target[side], target_rot=self._arm_target_rot[side])
-            self._apply_arm_control(side, arm_q)
-
-            # --- HAND: absolute retargeting (fingertip-to-palm in Allegro frame) ---
-            # Get Allegro hand frame rotation (at EE site)
-            ee_rot = self._data.site_xmat[ee_site_id].reshape(3, 3)
-
-            fingertips_world = tracking[f'{side}_fingertips']
-            fingertips_allegro = {}
-            for finger, pos in fingertips_world.items():
-                # Offset from MANO wrist to fingertip in world frame
-                offset_world = pos - wrist_pos
-                # Express in Allegro hand frame
-                fingertips_allegro[finger] = ee_rot.T @ offset_world
-
-            hand_q = hand.retarget_from_fingertips(fingertips_allegro)
-            self._apply_hand_control(side, hand_q)
-
-        for _ in range(self._n_substeps):
-            mujoco.mj_step(self._model, self._data)
-
-    def _step_avp(self):
-        """Control step for AVP-format source (25-joint hand skeleton, delta-pose)."""
-        tracking = self._source.get_latest()
-
-        if not self._engaged:
-            for _ in range(self._n_substeps):
-                mujoco.mj_step(self._model, self._data)
-            return
-
-        left_arm_q = self._left_arm.solve(tracking['left_wrist'], engaged=True)
-        right_arm_q = self._right_arm.solve(tracking['right_wrist'], engaged=True)
-
-        left_hand_q = self._left_hand.retarget(tracking['left_fingers'])
-        right_hand_q = self._right_hand.retarget(tracking['right_fingers'])
-
-        self._apply_arm_control('left', left_arm_q)
-        self._apply_arm_control('right', right_arm_q)
-        self._apply_hand_control('left', left_hand_q)
-        self._apply_hand_control('right', right_hand_q)
-
-        for _ in range(self._n_substeps):
-            mujoco.mj_step(self._model, self._data)
+    # ------------------------------------------------------------------
+    # Control step
+    # ------------------------------------------------------------------
 
     def step(self):
-        """Execute one control step: read tracking, retarget, apply commands."""
+        """Execute one control step: read tracking, retarget, IK, apply, physics."""
         if self._source is None:
+            for _ in range(self._n_substeps):
+                mujoco.mj_step(self._model, self._data)
             return
 
-        if self._is_mano:
-            self._step_mano()
-        else:
-            self._step_avp()
+        tracking = self._source.get_latest()
+
+        if not (self._engaged and self._calibrated):
+            for _ in range(self._n_substeps):
+                mujoco.mj_step(self._model, self._data)
+            return
+
+        # 1) Hand retargeting (DexPilot)
+        hand_q: Dict[str, np.ndarray] = {}
+        for side, arm in self._arms.items():
+            T_wrist = tracking[f'{arm.avp_side}_wrist']
+            fingers = tracking[f'{arm.avp_side}_fingers']
+            hand_q[side] = arm.hand_retargeter.retarget(T_wrist, fingers)
+
+        # 2) Freeze retargeted hand joints in the mink kinematic copy so IK
+        #    computes Jacobians with the hands in their commanded pose.
+        q_full = self._configuration.q.copy()
+        for side, arm in self._arms.items():
+            q_full[arm.hand_qpos_adr] = hand_q[side]
+        self._configuration.update(q_full)
+
+        # 3) Compose EE targets from wrist deltas and set frame tasks
+        for side, arm in self._arms.items():
+            T_wrist = tracking[f'{arm.avp_side}_wrist']
+            T_target = self._compose_ee_target(arm, T_wrist)
+            arm.frame_task.set_target(mink.SE3.from_matrix(T_target))
+
+        # Keep posture target near q_rest (nullspace regularizer)
+        q_post = self._configuration.q.copy()
+        for side, arm in self._arms.items():
+            q_post[arm.panda_qpos_adr] = _Q_REST
+        self._posture.set_target(q_post)
+
+        # 4) Solve bimanual IK
+        ik_ok = True
+        try:
+            vel = mink.solve_ik(
+                self._configuration, self._tasks, self._dt,
+                solver="daqp", damping=5.0, limits=self._limits,
+            )
+            self._configuration.integrate_inplace(vel, self._dt)
+        except Exception:
+            ik_ok = False
+
+        # 5) Smooth commands and apply to actuators
+        alpha_arm = 1.0 - np.exp(-self._dt / max(1e-6, self._smooth_tau_arm))
+        alpha_hand = 1.0 - np.exp(-self._dt / max(1e-6, self._smooth_tau_hand))
+        v_max = float(self._vel_limit)
+        a_max = float(self._accel_limit)
+
+        for side, arm in self._arms.items():
+            # Hand: always tracks (not gated on IK success)
+            arm.q_hand_cmd = arm.q_hand_cmd + alpha_hand * (hand_q[side] - arm.q_hand_cmd)
+            for i, act_id in enumerate(self._hand_act_ids[side]):
+                self._data.ctrl[act_id] = arm.q_hand_cmd[i]
+
+            # Arm: only advances if IK solved
+            if ik_ok:
+                q_arm_new = self._configuration.q[arm.panda_qpos_adr].copy()
+                q_smoothed = arm.q_arm_cmd + alpha_arm * (q_arm_new - arm.q_arm_cmd)
+                v_des = (q_smoothed - arm.q_arm_cmd) / self._dt
+                v_des = np.clip(v_des, -v_max, v_max)
+                dv_max = a_max * self._dt
+                v_new = arm.q_arm_vel_cmd + np.clip(
+                    v_des - arm.q_arm_vel_cmd, -dv_max, dv_max)
+                arm.q_arm_cmd = arm.q_arm_cmd + v_new * self._dt
+                arm.q_arm_vel_cmd = v_new
+            else:
+                # IK failed — decay velocity to zero under accel limit
+                dv_max = a_max * self._dt
+                arm.q_arm_vel_cmd = arm.q_arm_vel_cmd + np.clip(
+                    -arm.q_arm_vel_cmd, -dv_max, dv_max)
+
+            for i, act_id in enumerate(self._arm_act_ids[side]):
+                self._data.ctrl[act_id] = arm.q_arm_cmd[i]
+
+        # Step physics
+        for _ in range(self._n_substeps):
+            mujoco.mj_step(self._model, self._data)
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
 
     def run(self):
-        """Main loop: run simulation with viewer."""
+        """Run the simulation with MuJoCo viewer."""
         print("Starting teleoperation. Close the MuJoCo viewer to stop.")
-        if self._is_mano:
-            print("Double-click a mocap sphere and drag to move it.")
-        print("Press 'S' in the viewer to toggle robot engagement.")
-        print("[DISENGAGED] Robots holding position. Press 'S' to engage.")
+        print("Press 'C' to calibrate, then 'S' to engage.")
 
-        # Ensure ctrl is set before viewer opens (prevents first-frame drift)
         self._data.ctrl[:] = self._home_ctrl[:]
         mujoco.mj_forward(self._model, self._data)
 
@@ -287,7 +443,6 @@ class StandaloneTeleopController:
             self._model, self._data,
             key_callback=self._key_callback
         ) as viewer:
-            # Re-apply ctrl in case launch_passive reset data
             self._data.ctrl[:] = self._home_ctrl[:]
 
             start_time = time.time()
@@ -296,21 +451,27 @@ class StandaloneTeleopController:
             while viewer.is_running():
                 step_start = time.time()
 
-                # Detect viewer reset (ctrl zeroed by backspace) and restore home
+                # Detect viewer reset (backspace) and restore home state
                 if self._data.time == 0.0 and step_count > 0:
-                    # Restore settled state (not keyframe — avoids re-settling)
                     self._data.qpos[:] = self._home_qpos[:]
                     self._data.qvel[:] = 0
                     self._data.ctrl[:] = self._home_ctrl[:]
                     mujoco.mj_forward(self._model, self._data)
+                    # Reset state
                     self._engaged = False
-                    self._prev_mano_wrist = {'left': None, 'right': None}
-                    self._arm_target = {'left': None, 'right': None}
-                    self._arm_target_rot = {'left': None, 'right': None}
+                    self._calibrated = False
+                    q_init = self._home_qpos.copy()
+                    self._configuration.update(q_init)
+                    for arm in self._arms.values():
+                        arm.T_wrist_ref = None
+                        arm.T_ee_ref = None
+                        arm.q_arm_cmd = self._configuration.q[arm.panda_qpos_adr].copy()
+                        arm.q_arm_vel_cmd = np.zeros(7)
+                        arm.q_hand_cmd = self._configuration.q[arm.hand_qpos_adr].copy()
+                    print("[RESET] Viewer reset. Press 'C' to calibrate.")
 
                 self.step()
                 viewer.sync()
-
                 step_count += 1
 
                 # Rate limiting
@@ -319,15 +480,13 @@ class StandaloneTeleopController:
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
-                # Print status every 5 seconds
-                if step_count % (int(5 / self._dt)) == 0:
+                # Status print every 5 seconds
+                if step_count % int(5 / self._dt) == 0:
                     total_elapsed = time.time() - start_time
                     actual_freq = step_count / total_elapsed
-                    left_pos, _ = self._left_arm.get_ee_pose()
-                    right_pos, _ = self._right_arm.get_ee_pose()
-                    engaged_str = "ENGAGED" if self._engaged else "DISENGAGED"
-                    print(f"[{total_elapsed:.0f}s] {engaged_str} freq={actual_freq:.1f}Hz "
-                          f"left_ee={left_pos} right_ee={right_pos}")
+                    state = "ENGAGED" if self._engaged else "DISENGAGED"
+                    cal = "CAL" if self._calibrated else "UNCAL"
+                    print(f"[{total_elapsed:.0f}s] {state}/{cal} freq={actual_freq:.1f}Hz")
 
         print("Viewer closed. Stopping.")
 

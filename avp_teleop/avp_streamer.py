@@ -1,7 +1,12 @@
 """
 Apple Vision Pro streaming interface using the avp_stream library.
-Requires: pip install avp-stream
-Requires: Apple Vision Pro running the Tracking Streamer visionOS app on the same network.
+
+Returns tracking data in AVP native frame (Y-up). The coordinate transform
+to MuJoCo frame (Z-up) is handled by the teleop controller.
+
+Requires:
+    pip install avp-stream
+    Apple Vision Pro running the Tracking Streamer visionOS app on the same network.
 """
 import numpy as np
 from avp_teleop.avp_interface import HandTrackingSource
@@ -14,8 +19,8 @@ class AVPStreamer(HandTrackingSource):
         streamer = AVPStreamer(ip="192.168.1.100")
         while True:
             data = streamer.get_latest()
-            # data['left_wrist'] -> (4,4) transform
-            # data['left_fingers'] -> (25,4,4) finger joints
+            # data['left_wrist']   -> (4,4) transform in AVP frame
+            # data['left_fingers'] -> (25,4,4) finger joints in AVP frame
     """
 
     def __init__(self, ip_address: str, record: bool = False):
@@ -32,16 +37,51 @@ class AVPStreamer(HandTrackingSource):
         print(f"AVPStreamer: Connecting to Vision Pro at {ip_address}...")
 
     def get_latest(self) -> dict:
-        raw = self._streamer.get_latest()
+        """Return the latest tracking data in AVP native frame (Y-up).
+
+        Returns dict with:
+            head: (4,4) head transform
+            left_wrist / right_wrist: (4,4) wrist transforms
+            left_fingers / right_fingers: (25,4,4) finger keypoint transforms
+        """
+        try:
+            raw = self._streamer.latest
+        except Exception:
+            return HandTrackingSource.make_identity_data()
+
         if raw is None:
             return HandTrackingSource.make_identity_data()
 
+        identity = HandTrackingSource.make_identity_data()
+
+        def _get_pose(key: str) -> np.ndarray:
+            """Extract a 4x4 pose from raw data (handles list-wrapped format)."""
+            val = raw.get(key)
+            if val is None:
+                return identity.get(key, np.eye(4))
+            arr = np.asarray(val, dtype=float)
+            if arr.ndim == 3 and arr.shape[0] >= 1:
+                return arr[0]  # list-wrapped: take first element
+            if arr.shape == (4, 4):
+                return arr
+            return identity.get(key, np.eye(4))
+
+        def _get_fingers(key: str) -> np.ndarray:
+            """Extract (25,4,4) finger keypoints from raw data."""
+            val = raw.get(key)
+            if val is None:
+                return identity[key]
+            arr = np.asarray(val, dtype=float)
+            if arr.shape == (25, 4, 4):
+                return arr
+            return identity[key]
+
         return {
-            'head': np.array(raw.get('head', np.eye(4))),
-            'left_wrist': np.array(raw.get('left_wrist', np.eye(4))),
-            'right_wrist': np.array(raw.get('right_wrist', np.eye(4))),
-            'left_fingers': np.array(raw.get('left_fingers', np.tile(np.eye(4), (25, 1, 1)))),
-            'right_fingers': np.array(raw.get('right_fingers', np.tile(np.eye(4), (25, 1, 1)))),
+            'head': _get_pose('head'),
+            'left_wrist': _get_pose('left_wrist'),
+            'right_wrist': _get_pose('right_wrist'),
+            'left_fingers': _get_fingers('left_fingers'),
+            'right_fingers': _get_fingers('right_fingers'),
         }
 
     def is_connected(self) -> bool:

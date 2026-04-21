@@ -15,7 +15,6 @@ Usage:
 import os
 import sys
 import argparse
-import time
 import numpy as np
 
 # Add repo root to path
@@ -32,146 +31,140 @@ def _get_model_path():
     )
 
 
+def _get_dex_urdf_dir():
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'dex-urdf', 'robots', 'hands'
+    )
+
+
 def run_automated_test():
-    """Quick automated test without GUI: verify model loads, IK works, retargeting works."""
-    from avp_teleop.arm_retargeter import ArmRetargeter
+    """Quick automated test without GUI: verify model, DexPilot, mink IK."""
+    import mink
+    from dex_retargeting.retargeting_config import RetargetingConfig
     from avp_teleop.hand_retargeter import HandRetargeter
 
     model_path = _get_model_path()
+    dex_urdf_dir = _get_dex_urdf_dir()
     print(f"=== Automated Test ===")
     print(f"Loading model: {model_path}")
 
     model = mujoco.MjModel.from_xml_path(model_path)
     data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, 0)
     mujoco.mj_forward(model, data)
 
     print(f"  nq={model.nq}, nv={model.nv}, nu={model.nu}, nmocap={model.nmocap}")
     print(f"  Model loaded OK")
 
-    # Test arm retargeters
-    print("\n--- Arm Retargeting (delta-pose) ---")
-    left_arm = ArmRetargeter(model, data, 'left')
-    right_arm = ArmRetargeter(model, data, 'right')
+    # ---- Test DexPilot hand retargeting ----
+    print("\n--- DexPilot Hand Retargeting ---")
+    RetargetingConfig.set_default_urdf_dir(dex_urdf_dir)
 
-    # Initial EE poses
-    left_pos, left_rot = left_arm.get_ee_pose()
-    right_pos, right_rot = right_arm.get_ee_pose()
-    print(f"  Left  EE initial: pos={np.round(left_pos, 4)}")
-    print(f"  Right EE initial: pos={np.round(right_pos, 4)}")
+    for side in ['right', 'left']:
+        retargeter = HandRetargeter(side=side, dex_urdf_dir=dex_urdf_dir)
 
-    # Delta-pose test: first call sets origin, second call with offset causes movement
-    origin_T = np.eye(4)
-    origin_T[:3, 3] = [0.0, 0.0, 0.0]
-    left_arm.solve(origin_T, engaged=True)
-    right_arm.solve(origin_T, engaged=True)
+        # Synthetic wrist + fingers in MuJoCo frame
+        wrist = np.eye(4)
+        wrist[:3, 3] = [0.3, 0.0, 0.5]
+        fingers = np.tile(np.eye(4), (25, 1, 1))
+        # Place fingertips at plausible offsets from wrist
+        fingers[4, :3, 3] = wrist[:3, 3] + [0.02, -0.03, 0.08]   # thumb
+        fingers[9, :3, 3] = wrist[:3, 3] + [0.06, -0.02, 0.10]   # index
+        fingers[14, :3, 3] = wrist[:3, 3] + [0.07, 0.00, 0.10]   # middle
+        fingers[19, :3, 3] = wrist[:3, 3] + [0.06, 0.02, 0.09]   # ring
+        fingers[24, :3, 3] = wrist[:3, 3] + [0.04, 0.04, 0.07]   # little
 
-    moved_T = np.eye(4)
-    moved_T[:3, 3] = [0.1, 0.0, 0.0]
-    left_q = left_arm.solve(moved_T, engaged=True)
-    right_q = right_arm.solve(moved_T, engaged=True)
-    print(f"  Left  arm IK (delta +0.1 X): {np.round(left_q, 3)}")
-    print(f"  Right arm IK (delta +0.1 X): {np.round(right_q, 3)}")
+        q = retargeter.retarget(wrist, fingers)
+        print(f"  {side} hand: {np.round(q, 3)}")
+        assert q.shape == (16,), f"Expected (16,), got {q.shape}"
+        assert np.all(np.isfinite(q)), f"Non-finite values in {side} hand retarget"
+    print("  DexPilot retargeting: OK")
+
+    # ---- Test mink IK ----
+    print("\n--- mink Bimanual IK ---")
+    configuration = mink.Configuration(model)
+    q_init = data.qpos.copy()
+    configuration.update(q_init)
+
+    # Frame tasks for both EE sites
+    left_task = mink.FrameTask(
+        frame_name='mj_left_ee_site', frame_type='site',
+        position_cost=1.0, orientation_cost=0.3, lm_damping=5.0)
+    right_task = mink.FrameTask(
+        frame_name='mj_right_ee_site', frame_type='site',
+        position_cost=1.0, orientation_cost=0.3, lm_damping=5.0)
+    posture = mink.PostureTask(model, cost=5e-2)
+    posture.set_target_from_configuration(configuration)
+
+    tasks = [left_task, right_task, posture]
+
+    vel_limits = {}
+    for side in ('left', 'right'):
+        for i in range(1, 8):
+            vel_limits[f'mj_{side}_joint{i}'] = 1.0
+    limits = [
+        mink.ConfigurationLimit(model),
+        mink.VelocityLimit(model, vel_limits),
+    ]
+
+    # Set a target slightly offset from current EE
+    left_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'mj_left_ee_site')
+    right_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'mj_right_ee_site')
 
     mujoco.mj_forward(model, data)
-    left_pos2, _ = left_arm.get_ee_pose()
-    right_pos2, _ = right_arm.get_ee_pose()
-    left_moved = np.linalg.norm(left_pos2 - left_pos)
-    right_moved = np.linalg.norm(right_pos2 - right_pos)
-    print(f"  Left  EE after IK: pos={np.round(left_pos2, 4)} (moved {left_moved:.4f}m)")
-    print(f"  Right EE after IK: pos={np.round(right_pos2, 4)} (moved {right_moved:.4f}m)")
-    assert left_moved > 0.01, f"Left arm did not move enough: {left_moved}"
-    assert right_moved > 0.01, f"Right arm did not move enough: {right_moved}"
-    print(f"  Delta-pose IK: OK")
+    T_left = np.eye(4)
+    T_left[:3, :3] = data.site_xmat[left_site_id].reshape(3, 3)
+    T_left[:3, 3] = data.site_xpos[left_site_id] + [0.05, 0.0, -0.05]
+    T_right = np.eye(4)
+    T_right[:3, :3] = data.site_xmat[right_site_id].reshape(3, 3)
+    T_right[:3, 3] = data.site_xpos[right_site_id] + [-0.05, 0.0, -0.05]
 
-    # Test solve_absolute — use current EE position + small offset as target
-    print("\n--- Arm Retargeting (absolute) ---")
-    left_arm2 = ArmRetargeter(model, data, 'left')
-    current_pos, _ = left_arm2.get_ee_pose()
-    target = current_pos + np.array([0.05, -0.05, -0.05])
-    abs_q = left_arm2.solve_absolute(target)
-    left_arm2.set_joint_positions(abs_q)
-    mujoco.mj_forward(model, data)
-    result_pos, _ = left_arm2.get_ee_pose()
-    abs_err = np.linalg.norm(result_pos - target)
-    print(f"  Target: {np.round(target, 4)}, Result: {np.round(result_pos, 4)}, Error: {abs_err:.4f}m")
-    assert abs_err < 0.05, f"Absolute IK error too large: {abs_err}"
-    print(f"  Absolute IK: OK")
+    left_task.set_target(mink.SE3.from_matrix(T_left))
+    right_task.set_target(mink.SE3.from_matrix(T_right))
 
-    # Test hand retargeting (AVP format)
-    print("\n--- Hand Retargeting (AVP format) ---")
-    hand_retargeter = HandRetargeter(hand_scale=1.5)
+    dt = 0.01
+    for _ in range(100):
+        vel = mink.solve_ik(configuration, tasks, dt,
+                            solver="daqp", damping=5.0, limits=limits)
+        configuration.integrate_inplace(vel, dt)
 
-    fingers_open = np.tile(np.eye(4), (25, 1, 1))
-    for i, offset in enumerate([
-        [0.02, -0.03, 0.1],   [0, 0, 0], [0, 0, 0], [0, 0, 0],
-        [0.02, -0.03, 0.1],
-        [0.08, -0.04, 0.01],  [0, 0, 0], [0, 0, 0], [0, 0, 0],
-        [0.08, -0.04, 0.12],
-        [0.09, -0.01, 0.0],   [0, 0, 0], [0, 0, 0], [0, 0, 0],
-        [0.09, -0.01, 0.12],
-        [0.085, 0.02, 0.0],   [0, 0, 0], [0, 0, 0], [0, 0, 0],
-        [0.085, 0.02, 0.11],
-        [0.07, 0.04, 0.0],    [0, 0, 0], [0, 0, 0], [0, 0, 0],
-        [0.07, 0.04, 0.09],
-    ]):
-        fingers_open[i, :3, 3] = offset
+    # Verify arms moved
+    left_adr = [model.joint(f'mj_left_joint{i}').qposadr[0] for i in range(1, 8)]
+    right_adr = [model.joint(f'mj_right_joint{i}').qposadr[0] for i in range(1, 8)]
+    q_left = configuration.q[left_adr]
+    q_right = configuration.q[right_adr]
+    print(f"  Left arm after IK:  {np.round(q_left, 3)}")
+    print(f"  Right arm after IK: {np.round(q_right, 3)}")
+    left_diff = np.linalg.norm(q_left - q_init[left_adr])
+    right_diff = np.linalg.norm(q_right - q_init[right_adr])
+    print(f"  Left arm moved: {left_diff:.4f} rad, Right arm moved: {right_diff:.4f} rad")
+    assert left_diff > 0.001, f"Left arm didn't move enough: {left_diff}"
+    assert right_diff > 0.001, f"Right arm didn't move enough: {right_diff}"
+    print("  mink bimanual IK: OK")
 
-    allegro_q = hand_retargeter.retarget(fingers_open)
-    print(f"  Allegro joints (AVP): {np.round(allegro_q, 3)}")
-
-    from avp_teleop.hand_retargeter import ALLEGRO_JOINT_LIMITS
-    for i in range(16):
-        lo, hi = ALLEGRO_JOINT_LIMITS[i]
-        assert lo - 1e-6 <= allegro_q[i] <= hi + 1e-6, \
-            f"Joint {i} out of bounds: {allegro_q[i]} not in [{lo}, {hi}]"
-    print(f"  All 16 joints within limits: OK")
-
-    # Test hand retargeting (direct fingertips)
-    print("\n--- Hand Retargeting (fingertips) ---")
-    hand_retargeter2 = HandRetargeter(hand_scale=1.5)
-    fingertips = {
-        'thumb': np.array([0.02, -0.03, 0.1]),
-        'index': np.array([0.08, -0.04, 0.12]),
-        'middle': np.array([0.09, -0.01, 0.12]),
-        'ring': np.array([0.085, 0.02, 0.11]),
-    }
-    allegro_q2 = hand_retargeter2.retarget_from_fingertips(fingertips)
-    print(f"  Allegro joints (fingertips): {np.round(allegro_q2, 3)}")
-    for i in range(16):
-        lo, hi = ALLEGRO_JOINT_LIMITS[i]
-        assert lo - 1e-6 <= allegro_q2[i] <= hi + 1e-6, \
-            f"Joint {i} out of bounds: {allegro_q2[i]} not in [{lo}, {hi}]"
-    print(f"  All 16 joints within limits: OK")
-
-    # Test ManoMockHuman
+    # ---- Test ManoMockHuman ----
     print("\n--- ManoMockHuman ---")
     from avp_teleop.mock_human import ManoMockHuman
     mano = ManoMockHuman(model, data)
     tracking = mano.get_latest()
-    assert 'left_wrist_pos' in tracking
-    assert 'left_fingertips' in tracking
-    assert 'thumb' in tracking['left_fingertips']
-    print(f"  Left wrist: {np.round(tracking['left_wrist_pos'], 4)}")
-    print(f"  Left thumb: {np.round(tracking['left_fingertips']['thumb'], 4)}")
+    assert 'left_wrist' in tracking
+    assert tracking['left_wrist'].shape == (4, 4)
+    assert 'left_fingers' in tracking
+    assert tracking['left_fingers'].shape == (25, 4, 4)
+    print(f"  Left wrist pos: {np.round(tracking['left_wrist'][:3, 3], 4)}")
     print(f"  ManoMockHuman: OK")
 
-    # Test physics step with controls applied
+    # ---- Test physics ----
     print("\n--- Physics Integration ---")
     for i in range(7):
         act_name = f'mj_left_act_pos{i+1}'
         act_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, act_name)
-        data.ctrl[act_id] = left_q[i]
-    for i in range(16):
-        act_name = f'mj_left_allegro_act_joint_{i}_0'
-        act_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, act_name)
-        data.ctrl[act_id] = allegro_q[i]
+        data.ctrl[act_id] = q_left[i]
 
     for _ in range(100):
         mujoco.mj_step(model, data)
-
     mujoco.mj_forward(model, data)
-    left_pos3, _ = left_arm.get_ee_pose()
-    print(f"  Left EE after 100 physics steps: {np.round(left_pos3, 4)}")
     print(f"  Simulation stable: OK")
 
     print("\n=== All tests passed! ===")
@@ -183,6 +176,7 @@ def run_interactive(source_type, avp_ip=None):
 
     controller = StandaloneTeleopController(
         model_path=_get_model_path(),
+        dex_urdf_dir=_get_dex_urdf_dir(),
         control_freq=50.0,
     )
 
